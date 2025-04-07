@@ -1,9 +1,28 @@
 import os
 import sys
-from PyQt5 import QtWidgets, QtGui  # PyQt5 for the GUI
-from pydub import AudioSegment      # Pydub for audio conversion (uses ffmpeg)
-import whisper                     # OpenAI Whisper for transcription
-from docx import Document          # python-docx for Word document generation
+import tempfile
+import re
+from PyQt5 import QtWidgets, QtGui
+from pydub import AudioSegment
+import whisper
+from docx import Document
+
+def remove_duplicate_sentences(text):
+    """
+    Supprime les phrases consécutives identiques.
+    On découpe le texte sur ". " et on reconstruit en gardant une seule occurrence des phrases consécutives identiques.
+    """
+    # On découpe le texte en phrases (en utilisant ". " comme séparateur)
+    sentences = text.split('. ')
+    filtered = []
+    for sentence in sentences:
+        if not filtered or sentence.strip() != filtered[-1].strip():
+            filtered.append(sentence.strip())
+    # Reconstruction du texte ; on ajoute un point final s'il manque
+    new_text = '. '.join(filtered)
+    if new_text and new_text[-1] != '.':
+        new_text += '.'
+    return new_text
 
 class TranscriptionApp(QtWidgets.QWidget):
     def __init__(self):
@@ -11,105 +30,103 @@ class TranscriptionApp(QtWidgets.QWidget):
         self.setWindowTitle("Transcripteur OneNote WMA vers Word")
         self.resize(500, 150)
         
-        # Create GUI elements
+        # Création des widgets
         self.input_edit = QtWidgets.QLineEdit(self)
-        self.input_button = QtWidgets.QPushButton("Choisir un fichier WMA...", self)
+        self.input_button = QtWidgets.QPushButton("Choisir un fichier audio...", self)
         self.output_edit = QtWidgets.QLineEdit(self)
         self.output_button = QtWidgets.QPushButton("Choisir le fichier de sortie...", self)
         self.run_button = QtWidgets.QPushButton("Transcrire l'audio", self)
         self.status_label = QtWidgets.QLabel("Statut : en attente", self)
         
-        # Arrange elements in the window using layout
+        # Organisation avec un layout
         layout = QtWidgets.QGridLayout(self)
-        layout.addWidget(QtWidgets.QLabel("Fichier audio (.wma) :"), 0, 0)
+        layout.addWidget(QtWidgets.QLabel("Fichier audio (.wma, .mp3, .wav, .m4a):"), 0, 0)
         layout.addWidget(self.input_edit, 0, 1)
         layout.addWidget(self.input_button, 0, 2)
-        layout.addWidget(QtWidgets.QLabel("Document Word de sortie :"), 1, 0)
+        layout.addWidget(QtWidgets.QLabel("Document Word (.docx):"), 1, 0)
         layout.addWidget(self.output_edit, 1, 1)
         layout.addWidget(self.output_button, 1, 2)
         layout.addWidget(self.run_button, 2, 1)
         layout.addWidget(self.status_label, 3, 0, 1, 3)
         
-        # Connect button actions to methods
+        # Connexions
         self.input_button.clicked.connect(self.select_input_file)
         self.output_button.clicked.connect(self.select_output_file)
         self.run_button.clicked.connect(self.run_transcription)
     
     def select_input_file(self):
-        """Open file dialog to select the WMA audio file."""
         options = QtWidgets.QFileDialog.Options()
-        # Filter to display only WMA files or all audio files
         file_path, _ = QtWidgets.QFileDialog.getOpenFileName(
-            self, "Sélectionnez un fichier audio OneNote", "", 
-            "Fichiers audio (*.wma *.mp3 *.wav *.m4a);;Tous les fichiers (*)", options=options)
+            self, "Sélectionnez un fichier audio", "", 
+            "Fichiers audio (*.wma *.mp3 *.wav *.m4a);;Tous les fichiers (*)", options=options
+        )
         if file_path:
             self.input_edit.setText(file_path)
     
     def select_output_file(self):
-        """Open file dialog to specify the output Word document."""
         options = QtWidgets.QFileDialog.Options()
-        # Default extension .docx for output
         file_path, _ = QtWidgets.QFileDialog.getSaveFileName(
             self, "Nom du document de transcription", "", 
-            "Document Word (*.docx);;Tous les fichiers (*)", options=options)
+            "Document Word (*.docx);;Tous les fichiers (*)", options=options
+        )
         if file_path:
-            # Ensure the filename has .docx extension
             if not file_path.lower().endswith(".docx"):
                 file_path += ".docx"
             self.output_edit.setText(file_path)
     
     def run_transcription(self):
-        """Perform the audio transcription and save to Word document."""
         audio_path = self.input_edit.text().strip()
         output_path = self.output_edit.text().strip()
+        
         if not audio_path or not output_path:
-            QtWidgets.QMessageBox.warning(self, "Champs manquants",
-                                          "Veuillez sélectionner un fichier audio et un fichier de sortie.")
+            QtWidgets.QMessageBox.warning(
+                self, "Champs manquants",
+                "Veuillez sélectionner un fichier audio et un fichier de sortie."
+            )
             return
-        # Update status
-        self.status_label.setText("Statut : transcription en cours...")
-        QtGui.QGuiApplication.processEvents()  # refresh UI
+        
+        self.status_label.setText("Statut : Transcription en cours...")
+        QtGui.QGuiApplication.processEvents()
         
         try:
-            # 1. Conversion du WMA en WAV (si nécessaire)
+            # Conversion en WAV si nécessaire
             temp_wav = None
-            if audio_path.lower().endswith(".wma"):
-                # Chargement du fichier .wma via pydub (ffmpeg requis)
+            ext = os.path.splitext(audio_path)[1].lower()
+            if ext == ".wma":
                 audio = AudioSegment.from_file(audio_path, format="asf")
-                # Export en WAV PCM 16 bits
-                temp_wav = audio_path + "_temp.wav"
+                temp_wav = tempfile.mktemp(suffix=".wav")
                 audio.export(temp_wav, format="wav")
-                audio_to_transcribe = temp_wav
+                final_audio_path = temp_wav
             else:
-                # Si le fichier est déjà dans un format lisible (mp3, wav, etc.)
-                audio_to_transcribe = audio_path
+                final_audio_path = audio_path
             
-            # 2. Chargement du modèle Whisper (on peut choisir un modèle plus grand pour plus de précision)
-            model = whisper.load_model("medium")  # modèle 'medium' multilingue (équilibre précision/temps)
+            # Chargement du modèle Whisper "large-v2" pour une meilleure précision
+            model = whisper.load_model("large-v2")
             
-            # 3. Transcription de l'audio en texte (en spécifiant la langue française pour plus de précision)
-            result = model.transcribe(audio_to_transcribe, language="fr")
-            transcribed_text = result["text"]
+            # Transcription avec paramètres ajustés pour réduire les répétitions
+            result = model.transcribe(final_audio_path, language="fr", temperature=0.0, best_of=3)
+            raw_text = result["text"]
             
-            # 4. Création du document Word et écriture du texte transcrit
+            # Post-traitement pour enlever les répétitions consécutives
+            processed_text = remove_duplicate_sentences(raw_text)
+            
+            # Création et sauvegarde du document Word
             doc = Document()
-            doc.add_paragraph(transcribed_text)
+            doc.add_paragraph(processed_text)
             doc.save(output_path)
             
-            # Nettoyage du fichier temporaire si utilisé
             if temp_wav and os.path.exists(temp_wav):
                 os.remove(temp_wav)
             
-            # Mise à jour du statut et notification de fin
-            self.status_label.setText("Statut : Terminé. Transcription sauvegardée.")
-            QtWidgets.QMessageBox.information(self, "Transcription terminée",
-                                              "Le fichier a été transcrit avec succès !")
+            self.status_label.setText("Statut : Transcription terminée.")
+            QtWidgets.QMessageBox.information(
+                self, "Transcription terminée",
+                "La transcription a été réalisée avec succès."
+            )
         except Exception as e:
             self.status_label.setText("Statut : Échec de la transcription.")
-            QtWidgets.QMessageBox.critical(self, "Erreur",
-                                           f"Une erreur est survenue : {e}")
+            QtWidgets.QMessageBox.critical(self, "Erreur", str(e))
 
-# Exécution de l'application
 if __name__ == "__main__":
     app = QtWidgets.QApplication(sys.argv)
     window = TranscriptionApp()
